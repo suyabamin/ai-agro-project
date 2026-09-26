@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PlantDiseaseTreatmentProfile",
+  "description": "Schema for structured disease advisory data decoupled from the CNN model",
+  "type": "object",
+  "properties": {
+    "disease_name": {
+      "type": "string",
+      "description": "Standardized scientific and common disease name"
+    },
+    "crop": {
+      "type": "string",
+      "description": "Crop host name"
+    },
+    "symptoms": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Visual symptoms observed on foliage, stem, or fruit"
+    },
+    "cultural_treatment": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Non-chemical cultural management practices (e.g. sanitation, crop rotation)"
+    },
+    "chemical_treatment": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Verified agronomic chemical or biological treatments (expert vetted)"
+    },
+    "safety_notes": {
+      "type": "string",
+      "description": "Agricultural safety precautions, application timing, and PPE recommendations"
+    },
+    "source": {
+      "type": "string",
+      "description": "Verified agricultural extension service or academic reference"
+    }
+  },
+  "required": ["disease_name", "crop", "symptoms", "source"]
+}

@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
 """
-Phase 9: Create a reproducible, leakage-aware train/validation/test split.
+Create a reproducible, stratified, leakage-aware train/validation/test split.
 
-Reads the manifest produced by analyze_dataset.py and writes split assignments.
+Split Ratios:
+  - Train: 70%
+  - Validation: 15%
+  - Test: 15%
+Seed: 42
 
-Leakage control: images that are exact duplicates (same sha256) or near
-duplicates (perceptual hash within Hamming distance <= NEAR_THRESHOLD) are
-placed in the SAME split via union-find grouping, so a visually identical
-image can never appear in both train and test.
+Leakage prevention:
+Images that are exact duplicates (same sha256) or near-duplicates (perceptual hash
+Hamming distance <= threshold) are grouped via Union-Find and kept in the SAME split.
+No visually identical or near-identical image can cross between train, validation, and test.
 
-No image is copied, resized or deleted. Only a split label is assigned.
+Outputs:
+  - data/manifests/train_manifest.csv
+  - data/manifests/validation_manifest.csv
+  - data/manifests/test_manifest.csv
+  - data/manifests/dataset_split.csv
+  - reports/split_summary.json
 """
 
 import io
@@ -28,15 +37,29 @@ else:
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WORKSPACE_ROOT = SCRIPT_DIR.parent
+sys.path.insert(0, str(WORKSPACE_ROOT))
 
-MANIFEST = WORKSPACE_ROOT / "data" / "manifests" / "dataset_manifest.csv"
-DUPLICATES = WORKSPACE_ROOT / "data" / "manifests" / "duplicates.csv"
-OUT_MANIFEST = WORKSPACE_ROOT / "data" / "manifests" / "dataset_split.csv"
-OUT_SUMMARY = WORKSPACE_ROOT / "reports" / "split_summary.json"
+try:
+    import config
+    MANIFEST = config.DATASET_MANIFEST_CSV
+    DUPLICATES = config.DUPLICATES_CSV
+    OUT_MANIFEST = config.DATASET_SPLIT_CSV
+    TRAIN_OUT = config.TRAIN_MANIFEST_CSV
+    VAL_OUT = config.VAL_MANIFEST_CSV
+    TEST_OUT = config.TEST_MANIFEST_CSV
+    OUT_SUMMARY = config.SPLIT_SUMMARY_JSON
+except ImportError:
+    MANIFEST = WORKSPACE_ROOT / "data" / "manifests" / "dataset_manifest.csv"
+    DUPLICATES = WORKSPACE_ROOT / "data" / "manifests" / "duplicates.csv"
+    OUT_MANIFEST = WORKSPACE_ROOT / "data" / "manifests" / "dataset_split.csv"
+    TRAIN_OUT = WORKSPACE_ROOT / "data" / "manifests" / "train_manifest.csv"
+    VAL_OUT = WORKSPACE_ROOT / "data" / "manifests" / "validation_manifest.csv"
+    TEST_OUT = WORKSPACE_ROOT / "data" / "manifests" / "test_manifest.csv"
+    OUT_SUMMARY = WORKSPACE_ROOT / "reports" / "split_summary.json"
 
-TRAIN_RATIO = 0.80
-VAL_RATIO = 0.10
-TEST_RATIO = 0.10
+TRAIN_RATIO = 0.70
+VAL_RATIO = 0.15
+TEST_RATIO = 0.15
 SEED = 42
 NEAR_THRESHOLD = 4
 
@@ -66,13 +89,12 @@ def load_manifest():
     rows = []
     with open(MANIFEST, "r", newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
-            if row["is_valid"].lower() == "true":
+            if row.get("is_valid", "true").lower() == "true":
                 rows.append(row)
     return rows
 
 
 def load_duplicate_groups():
-    """Return list of (path_a, path_b) pairs that must stay in the same split."""
     pairs = []
     if not DUPLICATES.exists():
         return pairs
@@ -85,18 +107,16 @@ def load_duplicate_groups():
 
 def main():
     print("=" * 70)
-    print("PHASE 9 - STRATIFIED, LEAKAGE-AWARE SPLIT")
+    print("STRATIFIED, LEAKAGE-AWARE TRAIN / VAL / TEST SPLIT (70 / 15 / 15)")
     print("=" * 70)
 
     if not MANIFEST.exists():
         print(f"[FAIL] Manifest not found: {MANIFEST}")
-        print("       Run analyze_dataset.py first.")
         return 1
 
     rows = load_manifest()
-    print(f"[OK] Valid images loaded from manifest: {len(rows)}")
+    print(f"[OK] Valid images loaded: {len(rows):,}")
 
-    # Group related images so duplicates stay together.
     union = UnionFind()
     for row in rows:
         union.find(row["image_path"])
@@ -105,14 +125,14 @@ def main():
     for path_a, path_b in pairs:
         if path_a in union.parent and path_b in union.parent:
             union.union(path_a, path_b)
-    print(f"[OK] Duplicate/near-duplicate pairs linked: {len(pairs)}")
+    print(f"[OK] Duplicate/near-duplicate pairs linked: {len(pairs):,}")
 
     groups = defaultdict(list)
     for row in rows:
         groups[union.find(row["image_path"])].append(row)
-    print(f"[OK] Independent groups after grouping: {len(groups)}")
+    print(f"[OK] Independent connected groups: {len(groups):,}")
 
-    # Stratify by class, splitting whole groups.
+    # Stratify by class, keeping entire groups intact
     by_class = defaultdict(list)
     for group in groups.values():
         class_name = group[0]["class_name"]
@@ -121,6 +141,7 @@ def main():
     rng = random.Random(SEED)
     assignments = {}
     split_counts = defaultdict(lambda: defaultdict(int))
+    split_rows = {"train": [], "validation": [], "test": []}
 
     for class_name in sorted(by_class):
         class_groups = by_class[class_name][:]
@@ -144,7 +165,7 @@ def main():
             else:
                 test_groups.append(group)
 
-        # Backfill in case rounding left train short.
+        # Backfill if rounding left train short
         for group in test_groups[:]:
             if running < n_train:
                 train_groups.append(group)
@@ -156,19 +177,22 @@ def main():
                 for row in group:
                     assignments[row["image_path"]] = name
                     split_counts[name][class_name] += 1
+                    row_with_split = {**row, "split": name}
+                    split_rows[name].append(row_with_split)
 
     for name in ("train", "validation", "test"):
         total = sum(split_counts[name].values())
-        print(f"[OK] {name:<11}: {total:>6d} images")
+        pct = (total / len(rows)) * 100
+        print(f"[OK] {name:<11}: {total:>6d} images ({pct:.1f}%)")
 
-    # Leakage verification.
+    # Leakage verification
     group_splits = defaultdict(set)
     for path, split in assignments.items():
         group_splits[union.find(path)].add(split)
     leaked = [g for g, splits in group_splits.items() if len(splits) > 1]
     print(f"[OK] Groups spanning multiple splits: {len(leaked)} (must be 0)")
 
-    # Write split manifest.
+    # Write combined split manifest
     OUT_MANIFEST.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = list(rows[0].keys()) + ["split"]
     with open(OUT_MANIFEST, "w", newline="", encoding="utf-8") as handle:
@@ -176,6 +200,16 @@ def main():
         writer.writeheader()
         for row in rows:
             writer.writerow({**row, "split": assignments[row["image_path"]]})
+
+    # Write dedicated train, val, and test manifests
+    for split_name, target_file in [("train", TRAIN_OUT), ("validation", VAL_OUT), ("test", TEST_OUT)]:
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(target_file, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for r in split_rows[split_name]:
+                writer.writerow(r)
+        print(f"[OK] Dedicated manifest written: {target_file.name} ({len(split_rows[split_name]):,} rows)")
 
     summary = {
         "seed": SEED,
@@ -191,27 +225,13 @@ def main():
     OUT_SUMMARY.parent.mkdir(parents=True, exist_ok=True)
     OUT_SUMMARY.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-    print(f"\n[OK] Split manifest: {OUT_MANIFEST}")
-    print(f"[OK] Split summary : {OUT_SUMMARY}")
-
-    print("\n" + "=" * 70)
-    print("PER-CLASS SPLIT DISTRIBUTION")
-    print("=" * 70)
-    print(f"{'Class':<52} {'Train':>7} {'Val':>6} {'Test':>6}")
-    print("-" * 74)
-    for class_name in sorted(by_class):
-        print(
-            f"{class_name:<52} "
-            f"{split_counts['train'][class_name]:>7} "
-            f"{split_counts['validation'][class_name]:>6} "
-            f"{split_counts['test'][class_name]:>6}"
-        )
+    print(f"\n[OK] Split summary written: {OUT_SUMMARY}")
 
     if leaked:
         print("\n[FAIL] Data leakage detected: some duplicate groups span splits")
         return 1
 
-    print("\n[OK] No duplicate group spans more than one split.")
+    print("\n[PASS] No duplicate group spans more than one split. Zero data leakage verified.")
     return 0
 
 
