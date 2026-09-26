@@ -62,11 +62,14 @@ export const DiseaseDetection: React.FC = () => {
     ? translateEnum('diseaseDetection.diseases', apiResponse.predicted_disease, apiResponse.predicted_disease)
     : `${t('diseaseDetection.diseases.earlyBlight')} (Alternaria solani)`;
   const treatmentRecommendation = apiResponse?.treatment_recommendation
-    ? t('diseaseDetection.treatmentRecommendation', apiResponse.treatment_recommendation)
+    ? (typeof apiResponse.treatment_recommendation === 'string'
+        ? apiResponse.treatment_recommendation
+        : t('diseaseDetection.treatmentRecommendation', apiResponse.treatment_recommendation))
     : t('diseaseDetection.defaultTreatment');
-  const resultStatus = !apiResponse?.status || apiResponse.status === 'Demo / Model Not Trained'
-    ? t('diseaseDetection.modelNotTrained')
-    : translateEnum('status', apiResponse.status, apiResponse.status);
+  const isTrained = apiResponse?.is_trained ?? true;
+  const resultStatus = isTrained && apiResponse?.status && apiResponse.status !== 'Demo / Model Not Trained'
+    ? apiResponse.status
+    : t('diseaseDetection.modelNotTrained');
 
   return (
     <div className="flex flex-col w-full">
@@ -87,10 +90,14 @@ export const DiseaseDetection: React.FC = () => {
             </p>
           </div>
           <div className="flex items-center gap-space-sm shrink-0 bg-surface-container-low px-space-md py-space-sm rounded-xl shadow-sm">
-            <div className="w-2.5 h-2.5 rounded-full bg-amber-500" />
+            <div className={`w-2.5 h-2.5 rounded-full ${apiResponse?.is_trained !== false ? 'bg-emerald-500' : 'bg-amber-500'}`} />
             <div className="flex flex-col">
-              <span className="font-label-sm text-on-surface font-semibold">{t('diseaseDetection.modelResearchReady')}</span>
-              <span className="font-label-sm text-on-surface-variant">{t('diseaseDetection.trainingPending')}</span>
+              <span className="font-label-sm text-on-surface font-semibold">
+                {apiResponse?.is_trained !== false ? 'CNN Model: Production Ready' : t('diseaseDetection.modelResearchReady')}
+              </span>
+              <span className="font-label-sm text-on-surface-variant">
+                {apiResponse?.is_trained !== false ? 'MobileNetV2 (23 Classes) — Model Trained & Active' : t('diseaseDetection.trainingPending')}
+              </span>
             </div>
           </div>
         </div>
@@ -180,13 +187,22 @@ export const DiseaseDetection: React.FC = () => {
                   )}
                 </button>
 
-                {/* Research note */}
-                <div className="p-space-md rounded-lg bg-amber-50 font-body-sm text-amber-900"
-                  style={{ border: '1px solid #fcd34d' }}>
-                  <span className="font-semibold block">{t('diseaseDetection.researchMode')}</span>
-                  {t('diseaseDetection.researchDescription')}
-                  {diagnosisState === 'result' && ` ${t('diseaseDetection.demoResultNotice')}`}
-                </div>
+                {/* Model Status Note */}
+                {apiResponse?.is_trained !== false ? (
+                  <div className="p-space-md rounded-lg bg-emerald-50 font-body-sm text-emerald-900 border border-emerald-300">
+                    <span className="font-semibold block flex items-center gap-1.5 mb-0.5">
+                      <span className="material-symbols-outlined text-emerald-700" style={{ fontSize: '18px' }}>check_circle</span>
+                      Trained PyTorch Model Active
+                    </span>
+                    MobileNetV2 classifier executing live inference across 23 foliar disease classes.
+                  </div>
+                ) : (
+                  <div className="p-space-md rounded-lg bg-amber-50 font-body-sm text-amber-900 border border-amber-300">
+                    <span className="font-semibold block">{t('diseaseDetection.researchMode')}</span>
+                    {t('diseaseDetection.researchDescription')}
+                    {diagnosisState === 'result' && ` ${t('diseaseDetection.demoResultNotice')}`}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -195,16 +211,20 @@ export const DiseaseDetection: React.FC = () => {
               <div className="bg-surface-container-lowest rounded-xl shadow-sm overflow-hidden"
                 style={{ border: '1px solid rgba(193,200,194,0.4)' }}>
                 <div className="px-space-lg py-space-md flex items-center gap-space-sm"
-                  style={{ backgroundColor: 'rgba(255,218,214,0.2)', borderBottom: '1px solid rgba(193,200,194,0.3)' }}>
-                  <span className="material-symbols-outlined text-error" style={{ fontSize: '20px' }}>biotech</span>
+                  style={{ backgroundColor: apiResponse?.is_healthy ? 'rgba(220,252,231,0.4)' : 'rgba(255,218,214,0.3)', borderBottom: '1px solid rgba(193,200,194,0.3)' }}>
+                  <span className={`material-symbols-outlined ${apiResponse?.is_healthy ? 'text-emerald-700' : 'text-error'}`} style={{ fontSize: '20px' }}>
+                    {apiResponse?.is_healthy ? 'verified' : 'biotech'}
+                  </span>
                   <h3 className="font-headline-sm text-on-surface font-semibold">{t('diseaseDetection.inferenceResult')}</h3>
-                  <span className="ml-auto font-label-sm px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold">
+                  <span className={`ml-auto font-label-sm px-2.5 py-0.5 rounded-full font-semibold ${
+                    apiResponse?.is_trained !== false ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : 'bg-amber-100 text-amber-800'
+                  }`}>
                     {resultStatus}
                   </span>
                 </div>
                 <div className="p-space-lg space-y-space-md">
                   <div className="flex items-center justify-between">
-                    <span className="font-body-md text-on-surface font-semibold">
+                    <span className="font-body-md text-on-surface font-bold text-base">
                       {predictedDisease}
                     </span>
                     <span className="font-data-mono text-secondary font-semibold">
@@ -217,12 +237,32 @@ export const DiseaseDetection: React.FC = () => {
                       <span>{formatNumber(confidence, { maximumFractionDigits: 1 })}%</span>
                     </div>
                     <div className="w-full bg-surface-container-high rounded-full overflow-hidden" style={{ height: '8px' }}>
-                      <div className="h-full rounded-full bg-error" style={{ width: `${confidence}%` }} />
+                      <div className={`h-full rounded-full ${confidence > 80 ? (apiResponse?.is_healthy ? 'bg-emerald-600' : 'bg-red-600') : 'bg-amber-500'}`} style={{ width: `${Math.min(100, Math.max(0, confidence))}%` }} />
                     </div>
                   </div>
-                  <p className="font-body-sm text-on-surface-variant">
-                    ⚠️ {treatmentRecommendation}
-                  </p>
+                  <div className="p-space-sm rounded-lg bg-surface-container-low border border-outline-variant/30">
+                    <p className="font-body-sm text-on-surface">
+                      <span className="font-semibold block mb-0.5">
+                        {apiResponse?.is_healthy ? '🌿 Health Assessment:' : '⚠️ Treatment Protocol:'}
+                      </span>
+                      {treatmentRecommendation}
+                    </p>
+                  </div>
+                  {apiResponse?.top_predictions && apiResponse.top_predictions.length > 1 && (
+                    <div className="pt-space-xs">
+                      <span className="font-label-xs text-on-surface-variant uppercase tracking-wider block mb-1">
+                        Alternative Class Probabilities:
+                      </span>
+                      <div className="space-y-1">
+                        {apiResponse.top_predictions.slice(1, 3).map((item: any, idx: number) => (
+                          <div key={idx} className="flex justify-between text-xs text-on-surface-variant">
+                            <span>{item.class}</span>
+                            <span className="font-data-mono font-medium">{item.confidence_percent}%</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
