@@ -170,6 +170,18 @@ export interface NotificationItem {
   message: string;
   type: 'assignment' | 'submission' | 'alert';
   read: boolean;
+  requestId?: string;
+  farmerId?: string;
+  farmerName?: string;
+  ownerId?: string;
+  ownerName?: string;
+  fieldId?: string;
+  fieldName?: string;
+  farmId?: string;
+  farmName?: string;
+  workType?: string;
+  dailyRate?: string;
+  actionStatus?: 'pending' | 'approved' | 'rejected';
   createdAt: any;
 }
 
@@ -188,6 +200,9 @@ const LOCAL_FIELDS_KEY = 'agroai_cache_fields';
 const LOCAL_SUBS_KEY = 'agroai_cache_submissions';
 const LOCAL_IMGS_KEY = 'agroai_cache_images';
 const LOCAL_RATINGS_KEY = 'agroai_cache_ratings';
+const LOCAL_AREQS_KEY = 'agroai_cache_assignment_requests';
+const LOCAL_NOTIFS_KEY = 'agroai_cache_notifications';
+const LOCAL_ASSIGNS_KEY = 'agroai_cache_assignments';
 
 function loadCache<T>(key: string, fallback: T): T {
   try {
@@ -195,6 +210,15 @@ function loadCache<T>(key: string, fallback: T): T {
     return raw ? JSON.parse(raw) : fallback;
   } catch {
     return fallback;
+  }
+}
+
+export function saveCache(key: string, data: any): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(key, JSON.stringify(data));
+  } catch {
+    // Ignore quota limits
   }
 }
 
@@ -2108,6 +2132,7 @@ export interface AssignmentRequest {
   workType?: string;
   dailyRate?: string;
   message?: string;
+  notes?: string;
   status: AssignmentRequestStatus;
   initiatedBy?: 'owner' | 'farmer';
   createdAt: any;
@@ -2133,9 +2158,207 @@ export interface AssignmentRecord {
   unassignedAt?: any;
 }
 
-// In-memory fallbacks for offline/demo mode
-const inMemoryAssignmentRequests: AssignmentRequest[] = [];
-const inMemoryAssignments: AssignmentRecord[] = [];
+// ─── In-memory & LocalStorage fallbacks for offline/demo mode ─────────────
+
+export function isDemoOwner(id?: string | null): boolean {
+  return !id || id === 'owner_demo' || id === 'demo-user-owner-001' || id === 'demo-user-local';
+}
+
+const DEFAULT_NOTIFICATIONS: NotificationItem[] = [
+  {
+    id: 'notif_system_welcome',
+    recipientId: 'owner_demo',
+    title: 'Enterprise Farm System Active',
+    message: 'Welcome to your Salinas Valley Farm Workspace. Field monitoring and specialist hiring portals are operational.',
+    type: 'alert',
+    read: false,
+    createdAt: new Date(Date.now() - 3600000 * 2).toISOString(),
+  },
+];
+
+const inMemoryAssignmentRequests: AssignmentRequest[] = loadCache(LOCAL_AREQS_KEY, []);
+const inMemoryAssignments: AssignmentRecord[] = loadCache(LOCAL_ASSIGNS_KEY, []);
+const inMemoryNotifications: NotificationItem[] = loadCache(LOCAL_NOTIFS_KEY, DEFAULT_NOTIFICATIONS);
+
+// ─── Notification Services ──────────────────────────────────────────────────
+
+export async function createNotification(
+  params: Omit<NotificationItem, 'id' | 'createdAt'>
+): Promise<NotificationItem> {
+  const notifId = `notif_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const notif: NotificationItem = {
+    ...params,
+    id: notifId,
+    createdAt: new Date().toISOString(),
+  };
+
+  inMemoryNotifications.unshift(notif);
+  saveCache(LOCAL_NOTIFS_KEY, inMemoryNotifications);
+
+  if (db) {
+    try {
+      await setDoc(doc(db, 'notifications', notifId), {
+        ...notif,
+        createdAt: serverTimestamp(),
+      });
+    } catch (err) {
+      console.warn('createNotification Firestore write error:', err);
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('agroai-notification-received', { detail: notif }));
+  }
+  notifyEcosystemChange();
+
+  return notif;
+}
+
+export async function getNotifications(recipientId?: string, role?: 'owner' | 'farmer'): Promise<NotificationItem[]> {
+  const targetId = recipientId || (role === 'farmer' ? 'farmer_01' : 'owner_demo');
+
+  if (db) {
+    try {
+      const snap = await getDocs(collection(db, 'notifications'));
+      const dbNotifs: NotificationItem[] = [];
+      snap.forEach((d) => {
+        dbNotifs.push({ id: d.id, ...d.data() } as NotificationItem);
+      });
+      if (dbNotifs.length > 0) {
+        const filtered = dbNotifs.filter((n) => {
+          if (n.recipientId === targetId) return true;
+          if (isDemoOwner(targetId) && isDemoOwner(n.recipientId)) return true;
+          return false;
+        });
+        return filtered.sort((a, b) => {
+          const tA = new Date(a.createdAt?.toDate ? a.createdAt.toDate() : a.createdAt || 0).getTime();
+          const tB = new Date(b.createdAt?.toDate ? b.createdAt.toDate() : b.createdAt || 0).getTime();
+          return tB - tA;
+        });
+      }
+    } catch (err) {
+      console.warn('getNotifications Firestore read error, using cache:', err);
+    }
+  }
+
+  return inMemoryNotifications
+    .filter((n) => {
+      if (n.recipientId === targetId) return true;
+      if (isDemoOwner(targetId) && isDemoOwner(n.recipientId)) return true;
+      return false;
+    })
+    .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+}
+
+export function listenToNotifications(
+  recipientId: string,
+  callback: (notifications: NotificationItem[]) => void,
+  role?: 'owner' | 'farmer'
+): () => void {
+  const targetId = recipientId || (role === 'farmer' ? 'farmer_01' : 'owner_demo');
+
+  // Initial load
+  getNotifications(targetId, role).then(callback);
+
+  let unsubFirestore: (() => void) | null = null;
+  if (db) {
+    try {
+      const q = query(collection(db, 'notifications'));
+      unsubFirestore = onSnapshot(
+        q,
+        (snap) => {
+          const list: NotificationItem[] = [];
+          snap.forEach((d) => list.push({ id: d.id, ...d.data() } as NotificationItem));
+          const filtered = list.filter((n) => {
+            if (n.recipientId === targetId) return true;
+            if (isDemoOwner(targetId) && isDemoOwner(n.recipientId)) return true;
+            return false;
+          });
+          callback(
+            filtered.sort((a, b) => {
+              const tA = new Date(a.createdAt?.toDate ? a.createdAt.toDate() : a.createdAt || 0).getTime();
+              const tB = new Date(b.createdAt?.toDate ? b.createdAt.toDate() : b.createdAt || 0).getTime();
+              return tB - tA;
+            })
+          );
+        },
+        (err) => {
+          console.warn('Notifications snapshot error:', err);
+        }
+      );
+    } catch (err) {
+      console.warn('listenToNotifications setup error:', err);
+    }
+  }
+
+  const onEcosystemChange = () => {
+    getNotifications(targetId, role).then(callback);
+  };
+
+  window.addEventListener(ECOSYSTEM_UPDATED_EVENT, onEcosystemChange);
+  window.addEventListener('agroai-notification-received', onEcosystemChange);
+
+  return () => {
+    if (unsubFirestore) unsubFirestore();
+    window.removeEventListener(ECOSYSTEM_UPDATED_EVENT, onEcosystemChange);
+    window.removeEventListener('agroai-notification-received', onEcosystemChange);
+  };
+}
+
+export async function markNotificationAsRead(notificationId: string): Promise<void> {
+  const idx = inMemoryNotifications.findIndex((n) => n.id === notificationId);
+  if (idx !== -1) {
+    inMemoryNotifications[idx].read = true;
+    saveCache(LOCAL_NOTIFS_KEY, inMemoryNotifications);
+  }
+  if (db) {
+    try {
+      await updateDoc(doc(db, 'notifications', notificationId), { read: true });
+    } catch {
+      // Ignore
+    }
+  }
+  notifyEcosystemChange();
+}
+
+export async function markAllNotificationsAsRead(recipientId?: string, role?: 'owner' | 'farmer'): Promise<void> {
+  const targetId = recipientId || (role === 'farmer' ? 'farmer_01' : 'owner_demo');
+  inMemoryNotifications.forEach((n) => {
+    if (n.recipientId === targetId || (isDemoOwner(targetId) && isDemoOwner(n.recipientId))) {
+      n.read = true;
+    }
+  });
+  saveCache(LOCAL_NOTIFS_KEY, inMemoryNotifications);
+
+  const firestore = db;
+  if (firestore) {
+    try {
+      const snap = await getDocs(collection(firestore, 'notifications'));
+      const batchPromises: Promise<any>[] = [];
+      snap.forEach((d) => {
+        const data = d.data();
+        if (data.recipientId === targetId || (isDemoOwner(targetId) && isDemoOwner(data.recipientId))) {
+          if (!data.read) {
+            batchPromises.push(updateDoc(doc(firestore, 'notifications', d.id), { read: true }));
+          }
+        }
+      });
+      await Promise.all(batchPromises);
+    } catch {
+      // Ignore
+    }
+  }
+  notifyEcosystemChange();
+}
+
+export async function deleteNotification(notificationId: string): Promise<void> {
+  const idx = inMemoryNotifications.findIndex((n) => n.id === notificationId);
+  if (idx !== -1) {
+    inMemoryNotifications.splice(idx, 1);
+    saveCache(LOCAL_NOTIFS_KEY, inMemoryNotifications);
+  }
+  notifyEcosystemChange();
+}
 
 // ─── Hired Farmers Tracking (Owners can only rate farmers they hired) ─────────
 const LOCAL_HIRED_KEY = 'agroai_hired_farmers';
@@ -2500,6 +2723,7 @@ export async function createAssignmentRequest(params: {
   };
 
   inMemoryAssignmentRequests.unshift(request);
+  saveCache(LOCAL_AREQS_KEY, inMemoryAssignmentRequests);
 
   if (db) {
     try {
@@ -2507,34 +2731,42 @@ export async function createAssignmentRequest(params: {
         ...request,
         createdAt: serverTimestamp(),
       });
-
-      // Notification recipient:
-      // If initiated by farmer → recipient is owner!
-      // If initiated by owner → recipient is farmer!
-      const isFarmerInitiated = params.initiatedBy === 'farmer';
-      const recipientId = isFarmerInitiated ? params.ownerId : params.farmerId;
-      const notifTitle = isFarmerInitiated
-        ? 'New Field Work Application'
-        : 'New Field Assignment Request';
-      const notifMessage = isFarmerInitiated
-        ? `${params.farmerName} has applied to work on ${params.fieldName} at ${params.farmName}.`
-        : `${params.ownerName} wants to assign you to ${params.fieldName} at ${params.farmName}.`;
-
-      const notifId = `notif_areq_${Date.now()}`;
-      await setDoc(doc(db, 'notifications', notifId), {
-        id: notifId,
-        recipientId,
-        title: notifTitle,
-        message: notifMessage,
-        type: 'assignment',
-        read: false,
-        requestId,
-        createdAt: serverTimestamp(),
-      });
     } catch (err) {
       console.error('createAssignmentRequest Firestore error:', err);
     }
   }
+
+  // Notification recipient:
+  // If initiated by farmer → recipient is owner!
+  // If initiated by owner → recipient is farmer!
+  const isFarmerInitiated = params.initiatedBy === 'farmer';
+  const recipientId = isFarmerInitiated ? (params.ownerId || 'owner_demo') : params.farmerId;
+  const notifTitle = isFarmerInitiated
+    ? 'New Field Work Application'
+    : 'New Field Assignment Request';
+  const notifMessage = isFarmerInitiated
+    ? `${params.farmerName} has applied to work on ${params.fieldName} at ${params.farmName} (${params.workType || 'Field Specialist'} at ${params.dailyRate || '$120 / day'}).`
+    : `${params.ownerName} wants to assign you to ${params.fieldName} at ${params.farmName}.`;
+
+  await createNotification({
+    recipientId,
+    title: notifTitle,
+    message: notifMessage,
+    type: 'assignment',
+    read: false,
+    requestId,
+    farmerId: params.farmerId,
+    farmerName: params.farmerName,
+    ownerId: params.ownerId,
+    ownerName: params.ownerName,
+    fieldId: params.fieldId,
+    fieldName: params.fieldName,
+    farmId: params.farmId,
+    farmName: params.farmName,
+    workType: params.workType,
+    dailyRate: params.dailyRate,
+    actionStatus: 'pending',
+  });
 
   notifyEcosystemChange();
   return { success: true, request };
@@ -2603,28 +2835,40 @@ export async function getFarmerAssignmentRequests(farmerId: string): Promise<Ass
 }
 
 /**
- * Get assignment requests by ownerId (owner sees outgoing requests)
+ * Get assignment requests by ownerId (owner sees incoming applications and outgoing proposals)
  */
 export async function getOwnerAssignmentRequests(ownerId: string): Promise<AssignmentRequest[]> {
   if (db) {
     try {
-      const q = query(
-        collection(db, 'assignment_requests'),
-        where('ownerId', '==', ownerId)
-      );
-      const snap = await getDocs(q);
+      const snap = await getDocs(collection(db, 'assignment_requests'));
       const list: AssignmentRequest[] = [];
       snap.forEach((d) => list.push({ id: d.id, ...d.data() } as AssignmentRequest));
-      return list.sort((a, b) => (b.createdAt > a.createdAt ? 1 : -1));
+      if (list.length > 0) {
+        return list
+          .filter((r) => {
+            if (r.ownerId === ownerId) return true;
+            if (isDemoOwner(ownerId) && isDemoOwner(r.ownerId)) return true;
+            if (!r.ownerId || !ownerId) return true;
+            return false;
+          })
+          .sort((a, b) => (b.createdAt > a.createdAt ? 1 : -1));
+      }
     } catch (err) {
       console.error('getOwnerAssignmentRequests error:', err);
     }
   }
-  return inMemoryAssignmentRequests.filter((r) => r.ownerId === ownerId || ownerId === 'owner_demo' || !ownerId);
+  return inMemoryAssignmentRequests
+    .filter((r) => {
+      if (r.ownerId === ownerId) return true;
+      if (isDemoOwner(ownerId) && isDemoOwner(r.ownerId)) return true;
+      if (!r.ownerId || !ownerId) return true;
+      return false;
+    })
+    .sort((a, b) => (b.createdAt > a.createdAt ? 1 : -1));
 }
 
 /**
- * Farmer approves an assignment request.
+ * Owner or Farmer approves an assignment request / work application.
  * Creates an active assignment record and updates the field.
  */
 export async function approveAssignmentRequest(requestId: string): Promise<{ success: boolean; error?: string }> {
@@ -2655,7 +2899,7 @@ export async function approveAssignmentRequest(requestId: string): Promise<{ suc
   if (activeEmployer && activeEmployer.ownerId !== requestOwner) {
     return {
       success: false,
-      error: 'You are currently working for another farm owner. Ask them to free you before accepting a new owner.',
+      error: 'Worker is currently engaged by another farm owner. Ask them to free the worker before assignment.',
     };
   }
 
@@ -2678,12 +2922,22 @@ export async function approveAssignmentRequest(requestId: string): Promise<{ suc
     assignedAt: now,
   };
   inMemoryAssignments.unshift(assignmentRecord);
+  saveCache(LOCAL_ASSIGNS_KEY, inMemoryAssignments);
 
   // Update request status in memory
   const memIdx = inMemoryAssignmentRequests.findIndex((r) => r.id === requestId);
   if (memIdx !== -1) {
     inMemoryAssignmentRequests[memIdx].status = 'approved';
     inMemoryAssignmentRequests[memIdx].approvedAt = now;
+    saveCache(LOCAL_AREQS_KEY, inMemoryAssignmentRequests);
+  }
+
+  // Update notification actionStatus
+  const notifIdx = inMemoryNotifications.findIndex((n) => n.requestId === requestId);
+  if (notifIdx !== -1) {
+    inMemoryNotifications[notifIdx].actionStatus = 'approved';
+    inMemoryNotifications[notifIdx].read = true;
+    saveCache(LOCAL_NOTIFS_KEY, inMemoryNotifications);
   }
 
   if (db) {
@@ -2704,41 +2958,51 @@ export async function approveAssignmentRequest(requestId: string): Promise<{ suc
       // Update field with assigned farmer & record hiring relation
       recordOwnerHiredFarmer(request.ownerId || 'owner_demo', request.farmerId, request.fieldId);
       await assignFarmerToField(request.fieldId, request.farmerId, request.farmerName, request.ownerId, request.workType, request.dailyRate);
-
-      // Notify the appropriate party:
-      // If initiated by farmer → farmer gets notified that owner approved their application!
-      // If initiated by owner → owner gets notified that farmer accepted their proposal!
-      const isFarmerApp = request.initiatedBy === 'farmer';
-      const notifRecipientId = isFarmerApp ? request.farmerId : request.ownerId;
-      const notifTitle = isFarmerApp ? 'Work Application Approved' : 'Assignment Request Approved';
-      const notifMessage = isFarmerApp
-        ? `${request.ownerName} approved your work application for ${request.fieldName}! You are now assigned to this field parcel.`
-        : `${request.farmerName} approved your assignment request for ${request.fieldName}.`;
-
-      const notifId = `notif_approved_${Date.now()}`;
-      await setDoc(doc(db, 'notifications', notifId), {
-        id: notifId,
-        recipientId: notifRecipientId,
-        title: notifTitle,
-        message: notifMessage,
-        type: 'assignment',
-        read: false,
-        createdAt: serverTimestamp(),
-      });
     } catch (err) {
       console.error('approveAssignmentRequest Firestore error:', err);
     }
   } else {
     // Offline: update field in memory
+    recordOwnerHiredFarmer(request.ownerId || 'owner_demo', request.farmerId, request.fieldId);
     await assignFarmerToField(request.fieldId, request.farmerId, request.farmerName, request.ownerId, request.workType, request.dailyRate);
   }
+
+  // Notify the appropriate party:
+  // If initiated by farmer → farmer gets notified that owner approved their application!
+  // If initiated by owner → owner gets notified that farmer accepted their proposal!
+  const isFarmerApp = request.initiatedBy === 'farmer';
+  const notifRecipientId = isFarmerApp ? request.farmerId : (request.ownerId || 'owner_demo');
+  const notifTitle = isFarmerApp ? 'Work Application Approved! 🎉' : 'Assignment Request Approved';
+  const notifMessage = isFarmerApp
+    ? `${request.ownerName || 'Farm Owner'} approved your application for ${request.fieldName}! You are now assigned to this field parcel.`
+    : `${request.farmerName} accepted your assignment request for ${request.fieldName}.`;
+
+  await createNotification({
+    recipientId: notifRecipientId,
+    title: notifTitle,
+    message: notifMessage,
+    type: 'assignment',
+    read: false,
+    requestId: request.id,
+    farmerId: request.farmerId,
+    farmerName: request.farmerName,
+    ownerId: request.ownerId,
+    ownerName: request.ownerName,
+    fieldId: request.fieldId,
+    fieldName: request.fieldName,
+    farmId: request.farmId,
+    farmName: request.farmName,
+    workType: request.workType,
+    dailyRate: request.dailyRate,
+    actionStatus: 'approved',
+  });
 
   notifyEcosystemChange();
   return { success: true };
 }
 
 /**
- * Farmer rejects an assignment request.
+ * Owner declines farmer work application, or farmer rejects owner proposal.
  */
 export async function rejectAssignmentRequest(requestId: string): Promise<{ success: boolean; error?: string }> {
   let request: AssignmentRequest | null = null;
@@ -2760,11 +3024,19 @@ export async function rejectAssignmentRequest(requestId: string): Promise<{ succ
 
   const now = new Date().toISOString();
 
-  // Update in memory
+  // Update in memory & cache
   const memIdx = inMemoryAssignmentRequests.findIndex((r) => r.id === requestId);
   if (memIdx !== -1) {
     inMemoryAssignmentRequests[memIdx].status = 'rejected';
     inMemoryAssignmentRequests[memIdx].rejectedAt = now;
+    saveCache(LOCAL_AREQS_KEY, inMemoryAssignmentRequests);
+  }
+
+  // Update notification actionStatus
+  const notifIdx = inMemoryNotifications.findIndex((n) => n.requestId === requestId);
+  if (notifIdx !== -1) {
+    inMemoryNotifications[notifIdx].actionStatus = 'rejected';
+    saveCache(LOCAL_NOTIFS_KEY, inMemoryNotifications);
   }
 
   if (db) {
@@ -2774,29 +3046,36 @@ export async function rejectAssignmentRequest(requestId: string): Promise<{ succ
         rejectedAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       }, { merge: true });
-
-      // Notify the appropriate party
-      const isFarmerApp = request.initiatedBy === 'farmer';
-      const notifRecipientId = isFarmerApp ? request.farmerId : request.ownerId;
-      const notifTitle = isFarmerApp ? 'Work Application Declined' : 'Assignment Request Rejected';
-      const notifMessage = isFarmerApp
-        ? `${request.ownerName} was unable to accept your work application for ${request.fieldName}.`
-        : `${request.farmerName} rejected your assignment request for ${request.fieldName}.`;
-
-      const notifId = `notif_rejected_${Date.now()}`;
-      await setDoc(doc(db, 'notifications', notifId), {
-        id: notifId,
-        recipientId: notifRecipientId,
-        title: notifTitle,
-        message: notifMessage,
-        type: 'assignment',
-        read: false,
-        createdAt: serverTimestamp(),
-      });
     } catch (err) {
       console.error('rejectAssignmentRequest Firestore error:', err);
     }
   }
+
+  // Notify the appropriate party
+  const isFarmerApp = request.initiatedBy === 'farmer';
+  const notifRecipientId = isFarmerApp ? request.farmerId : (request.ownerId || 'owner_demo');
+  const notifTitle = isFarmerApp ? 'Work Application Declined' : 'Assignment Request Declined';
+  const notifMessage = isFarmerApp
+    ? `${request.ownerName || 'Farm Owner'} was unable to accept your work application for ${request.fieldName}.`
+    : `${request.farmerName} declined your assignment request for ${request.fieldName}.`;
+
+  await createNotification({
+    recipientId: notifRecipientId,
+    title: notifTitle,
+    message: notifMessage,
+    type: 'assignment',
+    read: false,
+    requestId: request.id,
+    farmerId: request.farmerId,
+    farmerName: request.farmerName,
+    ownerId: request.ownerId,
+    ownerName: request.ownerName,
+    fieldId: request.fieldId,
+    fieldName: request.fieldName,
+    farmId: request.farmId,
+    farmName: request.farmName,
+    actionStatus: 'rejected',
+  });
 
   notifyEcosystemChange();
   return { success: true };
@@ -2837,8 +3116,8 @@ export async function getFarmerApplications(farmerId: string): Promise<Assignmen
 /**
  * Get pending incoming applications from specialists for a farm owner's fields
  */
-export async function getOwnerIncomingApplications(ownerId: string): Promise<AssignmentRequest[]> {
-  const allReqs = await getOwnerAssignmentRequests(ownerId);
+export async function getOwnerIncomingApplications(ownerId?: string): Promise<AssignmentRequest[]> {
+  const allReqs = await getOwnerAssignmentRequests(ownerId || 'owner_demo');
   return allReqs.filter((r) => r.initiatedBy === 'farmer' && r.status === 'pending');
 }
 

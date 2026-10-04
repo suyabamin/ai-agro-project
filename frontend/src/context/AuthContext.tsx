@@ -133,13 +133,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Demo Mode shortcut
     if (email.toLowerCase() === 'demo@agroai.com' || email.toLowerCase() === 'demo' || password === 'demo123') {
       const demoUser = {
-        uid: 'demo-user-owner-001',
+        uid: 'owner_demo',
         email: 'demo@agroai.com',
         displayName: 'Demo Farm Owner',
       } as User;
       setUser(demoUser);
       setUserProfile({
-        uid: 'demo-user-owner-001',
+        uid: 'owner_demo',
         fullName: 'Demo Farm Owner',
         email: 'demo@agroai.com',
         role: 'owner',
@@ -149,13 +149,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     if (!isFirebaseReady) {
       const fallbackUser = {
-        uid: 'demo-user-local',
+        uid: 'owner_demo',
         email: email,
         displayName: email.split('@')[0] || 'AgroAI User',
       } as User;
       setUser(fallbackUser);
       setUserProfile({
-        uid: 'demo-user-local',
+        uid: 'owner_demo',
         fullName: email.split('@')[0] || 'AgroAI User',
         email: email,
         role: 'owner',

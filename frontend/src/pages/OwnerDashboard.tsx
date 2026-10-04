@@ -10,7 +10,7 @@ import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../i18n';
 import type { GeoPolygon, GeoLineString } from '../components/map/AgroMap';
 import { AgroMap } from '../components/map/AgroMap';
-import type { Farm, Field, FarmerProfile, FieldImageRecord, FieldLandData, FarmerRating } from '../services/ecosystem';
+import type { Farm, Field, FarmerProfile, FieldImageRecord, FieldLandData, FarmerRating, AssignmentRequest } from '../services/ecosystem';
 import {
   getFarms,
   createFarm,
@@ -26,6 +26,8 @@ import {
   getHiredFarmerIdsForOwner,
   getFieldAssignedWorkers,
   getOwnerIncomingApplications,
+  approveAssignmentRequest,
+  rejectAssignmentRequest,
   ECOSYSTEM_UPDATED_EVENT,
   notifyEcosystemChange,
   freeFarmerFromOwner,
@@ -93,7 +95,56 @@ export const OwnerDashboard: React.FC = () => {
   const [ratingModalSuccess, setRatingModalSuccess] = useState<string>('');
   const [ratingModalError, setRatingModalError] = useState<string>('');
   const [hiredFarmerIds, setHiredFarmerIds] = useState<Set<string>>(new Set());
-  const [incomingAppsCount, setIncomingAppsCount] = useState<number>(0);
+  const [incomingApplications, setIncomingApplications] = useState<AssignmentRequest[]>([]);
+  const [appActionLoadingId, setAppActionLoadingId] = useState<string | null>(null);
+  const [appActionToast, setAppActionToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
+
+  const handleOwnerAccept = async (app: AssignmentRequest) => {
+    setAppActionLoadingId(app.id);
+    try {
+      const res = await approveAssignmentRequest(app.id);
+      if (res.success) {
+        setAppActionToast({
+          message: t('farmers.acceptSuccess', `${app.farmerName} approved and assigned to ${app.fieldName}!`, {
+            farmerName: app.farmerName,
+            fieldName: app.fieldName,
+          }),
+          type: 'success',
+        });
+        notifyEcosystemChange();
+        loadEcosystemData();
+      } else {
+        setAppActionToast({ message: res.error || 'Failed to approve application', type: 'error' });
+      }
+    } catch (err: any) {
+      setAppActionToast({ message: err?.message || 'Error approving application', type: 'error' });
+    } finally {
+      setAppActionLoadingId(null);
+      setTimeout(() => setAppActionToast(null), 5000);
+    }
+  };
+
+  const handleOwnerDecline = async (requestId: string) => {
+    setAppActionLoadingId(requestId);
+    try {
+      const res = await rejectAssignmentRequest(requestId);
+      if (res.success) {
+        setAppActionToast({
+          message: t('farmers.rejectSuccess', 'Assignment request declined.'),
+          type: 'info',
+        });
+        notifyEcosystemChange();
+        loadEcosystemData();
+      } else {
+        setAppActionToast({ message: res.error || 'Failed to decline application', type: 'error' });
+      }
+    } catch (err: any) {
+      setAppActionToast({ message: err?.message || 'Error declining application', type: 'error' });
+    } finally {
+      setAppActionLoadingId(null);
+      setTimeout(() => setAppActionToast(null), 5000);
+    }
+  };
 
   // Filter only farmers hired by this owner (actively assigned or with approved contracts)
   const hiredFarmers = useMemo(() => {
@@ -239,7 +290,7 @@ export const OwnerDashboard: React.FC = () => {
 
       // Load pending specialist work applications for this owner
       const incomingApps = await getOwnerIncomingApplications(user?.uid || 'owner_demo');
-      setIncomingAppsCount(incomingApps.length);
+      setIncomingApplications(incomingApps || []);
 
       // Select first field by default for detailed inspection if none selected
       if (fieldList.length > 0) {
@@ -396,38 +447,159 @@ export const OwnerDashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* Incoming Specialist Applications Banner */}
-      {incomingAppsCount > 0 && (
-        <div className="p-space-md rounded-2xl bg-gradient-to-r from-primary/10 via-secondary/10 to-primary/5 border border-primary/30 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fade-in">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-primary text-on-primary flex items-center justify-center shrink-0 shadow-sm">
-              <span className="material-symbols-outlined text-[20px]">assignment_ind</span>
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="font-headline-sm text-body-md font-bold text-on-surface">
-                  {t('farmers.incomingApplicationsTitle', 'Incoming Specialist Applications')}
-                </h3>
-                <span className="px-2 py-0.5 rounded-full bg-primary text-on-primary text-[11px] font-bold">
-                  {incomingAppsCount}
-                </span>
-              </div>
-              <p className="text-body-sm text-on-surface-variant">
-                {t(
-                  'farmers.incomingApplicationsDesc',
-                  'Specialists have applied to work on your farm fields. Review their rates and approve assignments.'
-                )}
-              </p>
-            </div>
+      {/* Toast Feedback */}
+      {appActionToast && (
+        <div
+          className={`p-space-md rounded-xl shadow-md border flex items-center justify-between transition-all animate-fadeIn ${
+            appActionToast.type === 'success'
+              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+              : appActionToast.type === 'error'
+              ? 'bg-rose-500/10 border-rose-500/30 text-rose-400'
+              : 'bg-primary-500/10 border-primary-500/30 text-primary-300'
+          }`}
+        >
+          <div className="flex items-center gap-space-sm">
+            <span className="material-symbols-outlined text-xl">
+              {appActionToast.type === 'success' ? 'check_circle' : appActionToast.type === 'error' ? 'error' : 'info'}
+            </span>
+            <span className="font-label-md font-medium">{appActionToast.message}</span>
           </div>
           <button
             type="button"
-            onClick={() => navigate('/farmers?tab=assignments')}
-            className="px-4 py-2 rounded-xl bg-primary text-on-primary text-xs font-semibold hover:opacity-95 transition-all shadow-sm flex items-center gap-1.5 shrink-0 cursor-pointer"
+            onClick={() => setAppActionToast(null)}
+            className="text-on-surface-variant hover:text-on-surface p-1 rounded-lg cursor-pointer"
           >
-            <span>{t('farmers.reviewApplications', 'Review & Assign Farmers')}</span>
-            <span className="material-symbols-outlined text-[16px]">arrow_forward</span>
+            <span className="material-symbols-outlined text-sm">close</span>
           </button>
+        </div>
+      )}
+
+      {/* Incoming Specialist Applications Action Panel */}
+      {incomingApplications.length > 0 && (
+        <div className="p-space-lg rounded-2xl bg-surface-container-lowest border border-amber-500/30 shadow-sm relative overflow-hidden">
+          <div className="absolute top-0 left-0 h-1.5 w-full bg-gradient-to-r from-amber-500 via-primary to-emerald-500" />
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-space-md border-b border-outline-variant/30">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center shrink-0 border border-amber-500/20 shadow-inner">
+                <span className="material-symbols-outlined text-[22px]">assignment_ind</span>
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="font-headline-sm text-body-md font-bold text-on-surface">
+                    {t('farmers.incomingApplicationsTitle', 'Incoming Specialist Applications')}
+                  </h3>
+                  <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[11px] font-bold animate-pulse">
+                    {incomingApplications.length}
+                  </span>
+                </div>
+                <p className="text-body-sm text-on-surface-variant">
+                  {t(
+                    'farmers.incomingApplicationsDesc',
+                    'Specialists have applied to work on your farm fields. Review their rates and approve assignments.'
+                  )}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigate('/farmers?tab=assignments')}
+              className="px-4 py-2 rounded-xl bg-surface-container-low hover:bg-surface-container text-primary text-xs font-semibold transition-all shadow-sm flex items-center gap-1.5 shrink-0 cursor-pointer self-start sm:self-auto"
+            >
+              <span>{t('farmers.reviewApplications', 'Manage All in Worker Hub')}</span>
+              <span className="material-symbols-outlined text-[16px]">arrow_forward</span>
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-space-md mt-space-md">
+            {incomingApplications.map((app) => (
+              <div
+                key={app.id}
+                className="bg-surface-container-low/70 border border-outline-variant/40 rounded-xl p-space-md flex flex-col justify-between hover:border-outline-variant transition-all hover:shadow-md"
+              >
+                <div>
+                  <div className="flex items-start justify-between gap-space-xs mb-space-sm">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-9 h-9 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center text-primary font-bold text-sm">
+                        {app.farmerName?.charAt(0) || 'F'}
+                      </div>
+                      <div>
+                        <div className="font-label-lg font-semibold text-on-surface flex items-center gap-1.5">
+                          {app.farmerName}
+                          <span className="material-symbols-outlined text-xs text-primary" title="Verified Specialist">
+                            verified
+                          </span>
+                        </div>
+                        <div className="font-body-xs text-on-surface-variant">
+                          {app.createdAt ? new Date(app.createdAt).toLocaleDateString() : 'Recent application'}
+                        </div>
+                      </div>
+                    </div>
+                    <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                      Pending
+                    </span>
+                  </div>
+
+                  <div className="space-y-1.5 py-2 my-2 border-y border-outline-variant/30 text-xs">
+                    <div className="flex items-center justify-between text-on-surface-variant">
+                      <span className="flex items-center gap-1">
+                        <span className="material-symbols-outlined text-sm text-primary">landscape</span>
+                        {t('farmers.assignedField', 'Target Field')}:
+                      </span>
+                      <span className="font-semibold text-on-surface">{app.fieldName}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-on-surface-variant">
+                      <span className="flex items-center gap-1">
+                        <span className="material-symbols-outlined text-sm text-amber-400">psychology</span>
+                        {t('farmers.workType', 'Role')}:
+                      </span>
+                      <span className="font-medium text-on-surface truncate max-w-[160px]" title={app.workType}>
+                        {app.workType}
+                      </span>
+                    </div>
+                    {app.dailyRate ? (
+                      <div className="flex items-center justify-between text-on-surface-variant">
+                        <span className="flex items-center gap-1">
+                          <span className="material-symbols-outlined text-sm text-emerald-400">payments</span>
+                          {t('farmers.dailyRate', 'Daily Rate')}:
+                        </span>
+                        <span className="font-semibold text-emerald-400">৳{app.dailyRate} / day</span>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {app.notes && (
+                    <p className="font-body-xs text-on-surface-variant/90 italic bg-surface-container-lowest/60 p-2 rounded-lg border border-outline-variant/20 mb-3 line-clamp-2">
+                      "{app.notes}"
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => handleOwnerAccept(app)}
+                    disabled={appActionLoadingId === app.id}
+                    className="flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-label-sm font-semibold shadow-sm transition-all disabled:opacity-50 cursor-pointer"
+                  >
+                    {appActionLoadingId === app.id ? (
+                      <span className="material-symbols-outlined animate-spin text-sm">progress_activity</span>
+                    ) : (
+                      <span className="material-symbols-outlined text-sm">check_circle</span>
+                    )}
+                    <span>{t('layout.acceptAndAssign', 'Accept & Assign')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleOwnerDecline(app.id)}
+                    disabled={appActionLoadingId === app.id}
+                    className="px-3 py-2 rounded-lg border border-outline-variant/60 hover:bg-surface-container text-on-surface-variant hover:text-on-surface font-label-sm font-medium transition-all disabled:opacity-50 cursor-pointer"
+                  >
+                    <span>{t('layout.decline', 'Decline')}</span>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

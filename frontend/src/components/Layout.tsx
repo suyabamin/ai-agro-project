@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Outlet, useNavigate } from 'react-router-dom';
 import { Navigation } from './Navigation';
 import { PreferenceControls } from './PreferenceControls';
+import { NotificationsMenu } from './NotificationsMenu';
 import { ErrorBoundary } from './common/ErrorBoundary';
 import { apiService } from '../services/api';
 import type { HealthResponse } from '../services/api';
@@ -116,16 +117,7 @@ export const Layout: React.FC = () => {
             <div className="flex items-center gap-space-md">
               <PreferenceControls compact />
 
-              <button
-                className="relative p-space-xs rounded-lg text-on-surface-variant transition-colors"
-                aria-label={t('accessibility.notifications')}
-                title={t('accessibility.notifications')}
-                type="button"
-                onClick={() => navigate('/history')}
-              >
-                <span className="material-symbols-outlined" style={{ fontSize: '22px' }} aria-hidden="true">notifications</span>
-                <span className="absolute top-1 right-1 w-4 h-4 bg-error text-on-error rounded-full flex items-center justify-center font-label-sm">2</span>
-              </button>
+              <NotificationsMenu />
 
               <div className="h-6 w-px bg-outline-variant" style={{ opacity: 0.4 }} aria-hidden="true" />
 
