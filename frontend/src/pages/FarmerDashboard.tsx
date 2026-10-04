@@ -13,6 +13,7 @@ import { useI18n } from '../i18n';
 import { AgroMap } from '../components/map/AgroMap';
 import { uploadToCloudinary } from '../services/cloudinary';
 import { apiService } from '../services/api';
+import { firestoreService } from '../services/firebase';
 import type { Field, FieldImageRecord, FieldLandData, AssignmentRequest, AssignmentRecord, FarmerRating, Farm } from '../services/ecosystem';
 import {
   getFarmerAssignedFields,
@@ -327,11 +328,31 @@ export const FarmerDashboard: React.FC = () => {
     setAiAnalysisResult(null);
     try {
       const res = await apiService.runAlgorithmPlaceholder('cnn');
+      const scanResultName = res.result?.name || 'Leaf Disease Scanner';
       setAiAnalysisResult(t('farmerDashboard.cnnInferenceResult', 'CNN Inference Triggered: {result} • Execution: {time}ms • Status: {status}', {
-        result: translateEnum('algorithms', res.result?.name, res.result?.name || t('farmerDashboard.leafScanner', 'Leaf Scanner')),
+        result: translateEnum('algorithms', res.result?.name, scanResultName),
         time: formatNumber(res.execution_time_ms),
         status: t('status.active'),
       }));
+
+      // Log disease scan to audit trail
+      const logRecord = {
+        id: `rec-${Date.now()}`,
+        timestamp: formatDate(new Date(), { hour: '2-digit', minute: '2-digit' }) || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        utcTime: new Date().toISOString(),
+        category: 'Disease' as any,
+        field: selectedField?.name || 'Assigned Field Leaf Scan',
+        description: `Foliar scan result: ${scanResultName}`,
+        subDetail: `Engine: CNN MobileNetV2 • Execution: ${res.execution_time_ms}ms`,
+        engine: 'CNN MobileNetV2',
+        status: 'Action Flagged' as any,
+        operator: userProfile?.fullName || 'Field Worker',
+        hash: `0x${Math.random().toString(16).substring(2, 10)}${Math.random().toString(16).substring(2, 10)}${Math.random().toString(16).substring(2, 10)}`
+      };
+
+      await firestoreService.saveLog(logRecord);
+      await apiService.createLog(logRecord);
+      notifyEcosystemChange();
     } catch {
       setAiAnalysisResult(t('farmerDashboard.cnnInterfaceReady', 'CNN Interface Triggered: Leaf scanner active and ready'));
     } finally {

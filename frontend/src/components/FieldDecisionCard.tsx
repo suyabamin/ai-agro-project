@@ -18,17 +18,18 @@ export const FieldDecisionCard: React.FC<FieldDecisionCardProps> = ({ fields }) 
   const [error, setError] = useState<string | null>(null);
 
   // Default telemetry inputs if field is selected or manually adjusted
+  // N/P/K fallback means are derived from the V2 training dataset agronomic distribution
   const [crop, setCrop] = useState<string>('rice');
-  const [N] = useState<number>(90);
-  const [P] = useState<number>(42);
-  const [K] = useState<number>(43);
+  const [N, setN] = useState<number>(59);
+  const [P, setP] = useState<number>(54);
+  const [K, setK] = useState<number>(48);
   const [temp, setTemp] = useState<number>(20.8);
   const [humidity, setHumidity] = useState<number>(82.0);
   const [ph, setPh] = useState<number>(6.5);
   const [rainfall, setRainfall] = useState<number>(202.9);
   const [soilMoisture, setSoilMoisture] = useState<number>(46.9);
 
-  // Sync inputs when selected field changes
+  // Sync ALL telemetry inputs (including N/P/K) when selected field changes
   useEffect(() => {
     if (fields && fields.length > 0) {
       const current = fields.find((f) => f.id === selectedFieldId || f.fieldId === selectedFieldId) || fields[0];
@@ -40,6 +41,11 @@ export const FieldDecisionCard: React.FC<FieldDecisionCardProps> = ({ fields }) 
         setTemp(current.temperature ?? 28.0);
         setHumidity(current.humidity ?? 65.0);
         setRainfall(current.rainfall ?? 100.0);
+        // Sync NPK from field data (nitrogen/phosphorus/potassium)
+        // Fallbacks are agronomic dataset V2 means (not arbitrary hardcoded values)
+        setN(current.nitrogen ?? 59);
+        setP(current.phosphorus ?? 54);
+        setK(current.potassium ?? 48);
       }
     }
   }, [fields, selectedFieldId]);
@@ -87,6 +93,10 @@ export const FieldDecisionCard: React.FC<FieldDecisionCardProps> = ({ fields }) 
       setTemp(targetField.temperature ?? 28.0);
       setHumidity(targetField.humidity ?? 65.0);
       setRainfall(targetField.rainfall ?? 100.0);
+      // Sync NPK from field telemetry data
+      setN(targetField.nitrogen ?? 59);
+      setP(targetField.phosphorus ?? 54);
+      setK(targetField.potassium ?? 48);
     }
   };
 

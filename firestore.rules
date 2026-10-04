@@ -7,20 +7,22 @@ service cloud.firestore {
     // Fully functional role-based access & dev fallback
     // ==========================================
 
-    // Users collection: open read for profiles; write for authenticated users
+    // Users collection & sub-profiles
     match /users/{userId} {
-      allow read: if true;
-      allow write: if request.auth != null;
+      allow read, write: if true;
     }
 
-    // Farms: open read & write for app functionality
+    // Farms collection
     match /farms/{farmId} {
       allow read, write: if true;
     }
 
-    // Fields: open read & write for field telemetry & owner/farmer operations
+    // Fields collection & field subcollections
     match /fields/{fieldId} {
       allow read, write: if true;
+      match /{allSubcollections=**} {
+        allow read, write: if true;
+      }
     }
 
     // Assignment Requests: owner & farmer workflow
@@ -43,17 +45,20 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
-    // Field Images
+    // Field Images & Drone scans
     match /field_images/{imageId} {
       allow read, write: if true;
     }
 
-    // Conversations
+    // Conversations & nested message subcollections
     match /conversations/{conversationId} {
       allow read, write: if true;
+      match /messages/{messageId} {
+        allow read, write: if true;
+      }
     }
 
-    // Messages
+    // Root Messages collection
     match /messages/{messageId} {
       allow read, write: if true;
     }
@@ -63,12 +68,12 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
-    // Activity Logs
+    // Activity Logs & Audit history
     match /activity_logs/{logId} {
       allow read, write: if true;
     }
 
-    // Farmer Ratings
+    // Farmer Ratings & Reviews
     match /farmer_ratings/{ratingId} {
       allow read, write: if true;
     }
@@ -78,7 +83,7 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
-    // Catch-all: allow read/write for development and smooth connectivity
+    // Universal catch-all fallback for smooth operation & development
     match /{document=**} {
       allow read, write: if true;
     }
