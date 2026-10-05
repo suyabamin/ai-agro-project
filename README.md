@@ -128,3 +128,11 @@ AgroAI provides a role-based agricultural management system supporting two main 
 * `/history` — Immutable audit stream, search/filters, SHA-256 sealed record inspector.
 * `/settings` — Enterprise configuration dock, Farm Info form, AI preference toggles, Firebase health ping, language and theme preferences.
 * `/messages` — 1:1 real-time chat between farm owners and workers.
+
+* cd d:\AgroAI\backend
+python -m pip install -r requirements.txt
+python main.py
+
+cd d:\AgroAI\frontend
+npm install
+npm run dev
